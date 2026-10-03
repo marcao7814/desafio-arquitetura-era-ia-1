@@ -86,7 +86,7 @@ pytest tests/characterization -v
 
 10 testes, cobrindo as 4 features (caso feliz + caso de erro de entrada cada), contra a borda (`localhost:8000`). Fixam o corpo completo das respostas, não só o status. F3 usa um único dia (2026-08-01, 137 tickets) em vez do mês inteiro para manter a suíte rápida — ver nota em [tests/characterization/test_topics_report.py](tests/characterization/test_topics_report.py).
 
-### Métrica de acoplamento
+### Script de métrica
 
 ```bash
 pip install -r metrics/requirements.txt
@@ -95,6 +95,10 @@ pytest metrics/test_measure.py -v   # testa a régua do próprio script com um p
 ```
 
 Gera `metrics/results/<nome-da-tag>.csv` e o `.png` correspondente (gráfico A×I com a Main Sequence). Régua completa em [documentacao/specs.md](documentacao/specs.md#r3--métrica-de-acoplamento-régua-fixa).
+
+## Métrica
+
+Leitura dos três gráficos (`v1-coupled`, `v2-decoupled`, `main`) e as exceções declaradas.
 
 **v1-coupled → v2-decoupled:** `llm.py` (zona de dor, `Ca=4`) foi extinto; em seu lugar, `ports.py` (um `Protocol`, `A=1,00`, fora da zona de dor) e `adapters/gateway.py` (único componente de `app/` que fala com o gateway, importado só por `main.py`). As 4 features mantêm exatamente a mesma leitura de `v1` (`I` e `D` inalterados) — a refatoração trocou *quem* elas importam (de um módulo concreto para uma abstração), não *quanto* elas importam. `adapters.gateway` continua na zona de dor nesta tag (`Ca=1`, já no mínimo possível, mas `Ce=0` ⇒ `I=0`): é um achado registrado em [docs/refactoring-plan.md](docs/refactoring-plan.md#revisão-do-plano) e não é resolvido artificialmente aqui — a expectativa é que a Fase 5 (retry/backoff/fallback) decomponha esse adapter em colaboradores internos reais, subindo `Ce` organicamente. O critério de aceite que proíbe exceção para este componente é escopado à tag `main`, não a esta.
 
@@ -112,6 +116,21 @@ Gera `metrics/results/<nome-da-tag>.csv` e o `.png` correspondente (gráfico A×
 | `schemas` | 5 | 0 | 0,00 | 0,00 | 1,00 | **sim** |
 
 `llm.py`, `config.py` e `schemas.py` caem na zona de dor (`A<0,5 ∧ I<0,5 ∧ D≥0,5`): são componentes muito dependidos (`Ca` alto) e totalmente concretos (`A=0`). `llm.py` é hoje o componente que fala direto com os SDKs dos providers — exatamente o papel que, segundo [documentacao/adr.md (ADR-003)](documentacao/adr.md#adr-003-capacidades-lógicas-e-mapeamento-para-modelos-físicos), **não pode** ser declarado exceção: é alvo prioritário da refatoração da Fase 4 (provavelmente introduzindo uma abstração/porta que as features dependam, invertendo a dependência). `schemas.py` é o candidato mais claro a "estável por natureza" (são só tipos de valor — modelos Pydantic de entrada/saída), mas a decisão de declará-lo exceção fica para o ADR da métrica ([ADR-006](documentacao/adr.md#adr-006-leitura-da-métrica-de-acoplamento-e-exceções-declaradas)), à luz da medição da `main`, não da `v1`.
+
+**Leitura do gráfico da v2-decoupled:**
+
+| Componente | Ca | Ce | I | A | D | Zona de dor? |
+|---|---|---|---|---|---|---|
+| `main` | 0 | 7 | 1,00 | 0,00 | 0,00 | não |
+| `report` | 1 | 4 | 0,80 | 0,00 | 0,20 | não |
+| `classification` / `extraction` / `suggestion` | 1 | 3 | 0,75 | 0,00 | 0,25 | não |
+| `tickets` | 1 | 1 | 0,50 | 0,00 | 0,50 | não |
+| `ports` | 4 | 0 | 0,00 | 1,00 | 0,00 | não |
+| `adapters.gateway` | 1 | 0 | 0,00 | 0,00 | 1,00 | **sim** |
+| `config` | 6 | 0 | 0,00 | 0,00 | 1,00 | **sim** |
+| `schemas` | 5 | 0 | 0,00 | 0,00 | 1,00 | **sim** |
+
+Nesta tag, `adapters.gateway` ainda está na zona de dor: é o componente novo que chama o gateway, com `Ca=1` (só `main` o importa, já no mínimo) mas `Ce=0` (não depende de nada internamente) — a régua classifica qualquer componente-folha assim como "zona de dor" mecanicamente. Como a régua proíbe exceção para esse componente, ele precisava ser corrigido de verdade antes da tag `main` (ver abaixo), não just declarado exceção aqui.
 
 **Leitura do gráfico da `main` (final):**
 
