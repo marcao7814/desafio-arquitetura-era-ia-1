@@ -6,7 +6,7 @@
 
 O helpdesk de uma loja online tem 4 features de IA (classificação de ticket, sugestão de resposta, relatório de temas e extração de dados de pedido) acopladas diretamente a dois providers (OpenAI e Anthropic), de forma síncrona e sem resiliência. O objetivo deste trabalho é levar essa aplicação a um estado em que trocar de modelo ou de provider seja mudança de configuração — não um projeto — passando por: diagnóstico medido da v1, testes de caracterização, medição de acoplamento, refatoração assistida por agente atrás de um AI Gateway, e decisão explícita do modo de execução de cada feature.
 
-**Status atual:** tag `v2-decoupled` — a aplicação já fala com os providers exclusivamente por um AI Gateway (LiteLLM, serviço `gateway` no compose), usando capacidades lógicas (`helpdesk-classify`, `helpdesk-suggest`, `helpdesk-topics`, `helpdesk-extract`) em vez de nomes de modelo físico. Nenhuma chave de provider chega ao serviço `app`. Governança (orçamento, limite de requisições), resiliência (timeout, retry, fallback técnico e com modelo fraco) e o modo de execução por feature ainda não existem — entram na Fase 5 e 6 do [plano de execução](documentacao/plan.md). Por isso, hoje, um provider instável ainda derruba as features que dependem dele (ver Dor 3 no diagnóstico abaixo); esta seção será atualizada com o comportamento final de resiliência ao fim da Fase 6.
+**Status atual:** pós-`v2-decoupled`, Fase 5 concluída — a aplicação fala com os providers exclusivamente por um AI Gateway (LiteLLM, serviços `gateway`+`db` no compose), usando capacidades lógicas (`helpdesk-classify`, `helpdesk-suggest`, `helpdesk-topics`, `helpdesk-extract`). Nenhuma chave de provider chega ao serviço `app`. O gateway já tem timeout explícito, retry limitado (2 tentativas por destino) e fallback técnico entre providers para as 4 capacidades; fallback com modelo fraco decidido por feature com evidência real (ligado para F1/F2/F3, desligado para F4 — ver Tabela de fallback); e governança mínima (orçamento + limite de requisições, com recusa antes do provider). Com isso, a Dor 3 do diagnóstico abaixo (provider instável derruba parte do helpdesk) **já não reproduz mais**: um provider em `error_500` agora cai no fallback técnico ou no modelo fraco, conforme a feature. Falta a Fase 6: decidir e implementar o modo de execução (síncrono/streaming/assíncrono) de cada feature — até lá, todas continuam síncronas como na v1.
 
 ## Diagnóstico da v1
 
@@ -115,11 +115,29 @@ Gera `metrics/results/<nome-da-tag>.csv` e o `.png` correspondente (gráfico A×
 
 ## Tabela de capacidades
 
-_A preencher na Fase 5 (gateway) — ver [documentacao/adr.md](documentacao/adr.md#adr-003-capacidades-lógicas-e-mapeamento-para-modelos-físicos)._
+Configuração completa em [gateway/config.yaml](gateway/config.yaml). Número máximo de tentativas por destino (primário, fallback técnico e modelo fraco, quando existe): **2** (1 chamada + 1 retry — `litellm_settings.num_retries: 1`).
+
+| Capacidade lógica | Feature | Modelo primário | Fallback técnico | Fallback com modelo fraco | Timeout |
+|---|---|---|---|---|---|
+| `helpdesk-classify` | F1 Classificação | `openai/gpt-fake-large` | `anthropic/claude-fake-large` | `openai/gpt-fake-mini` | 4s |
+| `helpdesk-suggest` | F2 Sugestão de resposta | `anthropic/claude-fake-large` | `openai/gpt-fake-large` | `anthropic/claude-fake-mini` | 20s |
+| `helpdesk-topics` | F3 Relatório de temas | `anthropic/claude-fake-large` | `openai/gpt-fake-large` | `anthropic/claude-fake-mini` | 15s |
+| `helpdesk-extract` | F4 Extração de dados | `openai/gpt-fake-large` | `anthropic/claude-fake-large` | **nenhum** | 4s |
+
+Timeout calibrado pela latência real de cada tarefa em modo normal (classify/extract ~1,1s; topics ~9,8s/lote; suggest ~15,9s sem streaming) — um valor único e baixo quebraria `suggest`/`topics` em operação normal, não só em falha. Detalhe em [docs/adr/0002-resiliencia-e-fallback.md](docs/adr/0002-resiliencia-e-fallback.md).
 
 ## Tabela de fallback
 
-_A preencher na Fase 5, com evidência real de comparação `large` vs `mini` por tarefa — ver [documentacao/adr.md](documentacao/adr.md#adr-002-política-de-fallback-técnico-e-com-modelo-fraco)._
+Decisão por feature, com evidência real (`large` vs `mini` nas 4 tarefas, [scripts/compare_models.py](scripts/compare_models.py)) — detalhe completo em [docs/adr/0002-resiliencia-e-fallback.md](docs/adr/0002-resiliencia-e-fallback.md).
+
+| Feature | Sem nenhum `large` disponível | Evidência |
+|---|---|---|
+| F1 Classificação | Responde via `gpt-fake-mini` (`200`) | 0/4 divergências nos testes — `category`/`priority` idênticos ao `large` |
+| F2 Sugestão de resposta | Responde via `claude-fake-mini` (`200`), texto mais curto | 2/2 divergências, mas texto coerente; atendente revisa antes de enviar |
+| F3 Relatório de temas | Responde via `claude-fake-mini` (`200`) | 0 divergências nos 15 temas/contagens testados (dia 2026-08-01) |
+| F4 Extração de dados | Falha explícita (`500`) — **sem fallback para `mini`** | 2/3 divergências; `mini` confundiu o número da nota fiscal com o número do pedido — erro real, não hipotético, numa feature sem revisão humana |
+
+Testado nesta sessão: com os dois `large` de uma capacidade em `error_500`, `helpdesk-classify`/`helpdesk-suggest`/`helpdesk-topics` respondem `200` via `mini`; `helpdesk-extract` responde `500`.
 
 ## Fluxos
 
@@ -127,11 +145,41 @@ _A preencher na Fase 6 (modo de execução por feature) — ver [documentacao/ad
 
 ## Troca de modelo
 
-_A preencher na Fase 5 — hoje (v1-coupled) a troca de modelo exige editar [app/helpdesk/config.py](app/helpdesk/config.py) e reconstruir a imagem (ver Dor 4 acima); esse é exatamente o comportamento que o gateway vai eliminar._
+Editar `litellm_params.model` da capacidade em [gateway/config.yaml](gateway/config.yaml) (ex.: `openai/gpt-fake-large` → `openai/gpt-fake-mini` em `helpdesk-classify`) e reiniciar **só** o gateway:
+
+```bash
+docker compose restart gateway
+```
+
+`app` não é tocado. Testado nesta sessão: trocando `helpdesk-classify` para `gpt-fake-mini`, a próxima chamada pela borda (`curl localhost:8000/tickets/classification`) já respondeu com o novo modelo (`GET localhost:8090/admin/calls` mostrou `"model":"gpt-fake-mini"`, `duration_ms` caiu de 1076 para 375), e `docker compose ps app` mostrou o mesmo tempo de atividade de antes da troca — `app` nunca reiniciou.
 
 ## Roteiro de governança
 
-_A preencher na Fase 5 — depende da configuração de orçamento e limite de requisições no gateway, que ainda não existe nesta tag._
+```bash
+GATEWAY_MASTER_KEY=sk-gateway-master-0001 ./gateway/setup_governance_demo_keys.sh
+```
+
+Cria (de forma idempotente, sem passo manual em painel) duas virtual keys restritas a `helpdesk-classify`: `demo-budget` (orçamento de US$ 0,0001) e `demo-ratelimit` (1 requisição/minuto). O script imprime o valor de cada chave — use-o nos comandos abaixo.
+
+**Recusa por orçamento:**
+```bash
+curl -s -X POST localhost:4000/chat/completions -H "Authorization: Bearer <demo-budget-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "helpdesk-classify", "messages": [{"role": "user", "content": "TASK: classify\nteste"}]}'
+# repetir o mesmo comando — a 2a chamada responde 429:
+# {"error":{"message":"Budget has been exceeded! ...","type":"budget_exceeded","code":"429"}}
+```
+
+**Recusa por limite de requisições:**
+```bash
+curl -s -X POST localhost:4000/chat/completions -H "Authorization: Bearer <demo-ratelimit-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "helpdesk-classify", "messages": [{"role": "user", "content": "TASK: classify\nteste"}]}'
+# repetir imediatamente — a 2a chamada responde 429:
+# {"error":{"message":"Rate limit exceeded ...","type":"throttling_error","code":"429"}}
+```
+
+Em ambos os casos, confirmado nesta sessão: `GET localhost:8090/admin/calls` não ganha um novo registro na chamada recusada — a recusa acontece no gateway, antes do provider. Detalhe e evidência completa em [docs/adr/0003-governanca-chaves.md](docs/adr/0003-governanca-chaves.md).
 
 ## Mapa de decisões
 

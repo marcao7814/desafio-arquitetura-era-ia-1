@@ -5,6 +5,19 @@ services:
     ports:
       - "8090:8090"
 
+  db:
+    # Só o gateway acessa. Justificativa: docs/adr/0001-banco-de-dados-do-gateway.md
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: litellm
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
   gateway:
     image: ghcr.io/berriai/litellm:v1.102.1
     env_file: .env
@@ -20,6 +33,8 @@ services:
       retries: 40
     depends_on:
       provider-fake:
+        condition: service_healthy
+      db:
         condition: service_healthy
 
   edge:

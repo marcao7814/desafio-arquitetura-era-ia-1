@@ -124,7 +124,7 @@ curl -s -X POST localhost:8090/admin/reset
 
 ## 7. Troca de modelo físico por configuração (pós `v2-decoupled`)
 
-1. Editar a configuração da capacidade em `gateway/` (arquivo e campo exatos — preencher aqui quando o gateway estiver configurado).
+1. Editar `litellm_params.model` da capacidade em [gateway/config.yaml](../gateway/config.yaml) (ex.: `openai/gpt-fake-large` → `openai/gpt-fake-mini`).
 2. Reiniciar **só** o gateway:
    ```bash
    docker compose restart gateway
@@ -140,21 +140,14 @@ curl -s -X POST localhost:8090/admin/reset
 
 ## 8. Roteiro de governança
 
-### Recusa por orçamento
+Implementado (Fase 5). Comandos exatos, com as chaves reais geradas pelo script, estão na seção "Roteiro de governança" do [README.md](../README.md#roteiro-de-governança) — não duplicados aqui para não divergir. Resumo:
+
 ```bash
-# disparar chamadas até estourar o budget da virtual key configurada (ver adr.md ADR-005)
-# a última chamada deve ser recusada PELO GATEWAY, sem chegar ao provider-fake
-curl -s localhost:8090/admin/calls | jq 'length'   # não deve aumentar com a chamada recusada
+GATEWAY_MASTER_KEY=sk-gateway-master-0001 ./gateway/setup_governance_demo_keys.sh
+# usar as chaves impressas (demo-budget, demo-ratelimit) nos comandos do README
 ```
 
-### Recusa por limite de requisições
-```bash
-# disparar chamadas acima do rate limit configurado para a capacidade de alto volume
-# confirmar status de recusa retornado pelo gateway (ex.: 429) antes do provider-fake
-curl -s localhost:8090/admin/calls | jq 'length'   # idem — não deve aumentar
-```
-
-Preencher os comandos exatos (payload, capacidade, nº de chamadas até estourar) quando a config do gateway existir — este runbook vira a seção "Roteiro de governança" do README final.
+Em ambos os casos (orçamento e rate limit), a 2ª chamada responde `429` e `curl -s localhost:8090/admin/calls | jq 'length'` não aumenta — a recusa acontece no gateway, antes do provider. Decisões e evidência completas: [docs/adr/0003-governanca-chaves.md](../docs/adr/0003-governanca-chaves.md).
 
 ## 9. Verificações de isolamento de credenciais (antes de cada tag pós-`v2-decoupled`)
 

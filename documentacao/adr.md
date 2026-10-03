@@ -61,7 +61,7 @@
 ## ADR-002: Política de fallback (técnico e com modelo fraco)
 
 **Nível:** solução
-**Status:** Proposta — decisão por feature pendente de evidência
+**Status:** Decidida, com evidência
 
 **Contexto.** R5 exige, para toda capacidade: timeout explícito, retry limitado com backoff, e fallback técnico para um destino equivalente em outro provider. Além disso, para cada feature, decidir se — sem nenhum modelo `large` disponível — vale responder com um `mini` ou falhar explicitamente. É decisão de produto, não só de infraestrutura.
 
@@ -70,18 +70,29 @@
 2. Fallback técnico + fallback para `mini` em todas as features.
 3. Fallback técnico sempre; fallback para `mini` decidido feature por feature, com base na comparação real de saídas `large` vs `mini` por tarefa.
 
-**Decisão.** Opção 3. Fallback técnico (outro provider, mesmo capacidade) é obrigatório para as 4 features, com número máximo de tentativas por destino declarado no README. Fallback para `mini` é avaliado individualmente:
+**Decisão.** Opção 3. Fallback técnico (outro provider, mesmo capacidade) é obrigatório para as 4 features, com número máximo de tentativas por destino declarado no README.
 
-| Feature | Fallback técnico | Fallback com `mini`? | Racional preliminar |
+**Evidência coletada** (script `compare_models.py`, chamando `gpt-fake-large/mini` e `claude-fake-large/mini` direto no `provider-fake`, mesmos tickets nos dois tamanhos):
+
+| Tarefa | Amostras | Divergências | O que divergiu |
 |---|---|---|---|
-| F1 Classificação | Sim | A confirmar | Saída curta e estruturada — candidata a tolerar `mini` se a comparação mostrar categorias/prioridades equivalentes |
-| F2 Sugestão de resposta | Sim | A confirmar | Saída longa, visível ao cliente — risco de qualidade perceptível; decidir com base na comparação de texto |
-| F3 Relatório de temas | Sim | A confirmar | Ninguém espera olhando; tolerância a latência maior pode reduzir a pressão por `mini`, mas volume (lotes de 150) pode mudar o cálculo de custo |
-| F4 Extração de dados | Sim | A confirmar — tendência a **não** aceitar `mini` | Alimenta automação sem revisão humana; erro custa frete, estoque e cliente — precisa de evidência forte antes de aceitar degradação |
+| `classify` (F1) | 4 tickets | 0/4 | nenhuma — `category` e `priority` idênticos em todos os casos |
+| `topics` (F3) | 1 dia (137 tickets) | 0 | mesmos 15 temas, mesmas contagens exatas |
+| `suggest` (F2) | 2 tickets | 2/2 | texto mais curto e com conselhos diferentes (ex.: `large` oferece coleta do produto sem custo; `mini` pede foto/vídeo) — diferente, mas coerente como rascunho |
+| `extract` (F4) | 3 tickets | 2/3 | **`mini` extraiu o número da nota fiscal (`#530720`) como se fosse o número do pedido, em vez do pedido real (`#605065`)**, e perdeu o nome do produto num dos casos |
 
-**Consequências.** A tabela final e a evidência (comparação real `large` vs `mini` por tarefa, via chamada direta ao `provider-fake`) substituem os "A confirmar" acima na Fase 5 de [plan.md](./plan.md), antes de ligar qualquer fallback para `mini` em produção.
+**Decisão por feature:**
 
-**Evidência a coletar:** saídas de `classify`, `suggest`, `topics`, `extract` nos dois tamanhos de modelo, comparadas lado a lado — nenhuma inventada aqui.
+| Feature | Fallback técnico | Fallback com `mini`? | Motivo |
+|---|---|---|---|
+| F1 Classificação | Sim | **Sim** | 0/4 divergências — `mini` entrega exatamente o mesmo resultado estruturado |
+| F2 Sugestão de resposta | Sim | **Sim** | o atendente edita antes de enviar (não é saída final automática); um rascunho mais simples ainda é melhor que nenhum rascunho |
+| F3 Relatório de temas | Sim | **Sim** | 0 divergências nos temas/contagens testados; ninguém espera olhando, e um relatório com `mini` ainda é melhor que nenhum relatório |
+| F4 Extração de dados | Sim | **Não — falha explícita** | `mini` errou o número do pedido em 2 de 3 casos. F4 alimenta troca/devolução sem revisão humana: um pedido errado vira uma troca errada, que custa frete, estoque e cliente real. A evidência mostra que a degradação não é "uma resposta pior", é "uma resposta estruturalmente errada" |
+
+**Consequências.** F1/F2/F3 ganham uma camada extra de disponibilidade (ainda respondem mesmo com os dois `large` fora do ar); F4 prioriza correção sobre disponibilidade — com os dois `gpt-fake-large`/`claude-fake-large` indisponíveis, F4 responde com erro explícito em vez de arriscar um número de pedido errado.
+
+**Evidência:** `scripts/compare_models.py` (versionado no repo). Rodar com `pip install openai anthropic && python scripts/compare_models.py` contra o `provider-fake` no ar — reproduzível com qualquer ticket de `data/tickets.jsonl`.
 
 ---
 
@@ -147,17 +158,17 @@
 ## ADR-005: Governança de chaves, orçamentos e limites
 
 **Nível:** software
-**Status:** Proposta
+**Status:** Decidida, com evidência — ver [docs/adr/0003-governanca-chaves.md](../docs/adr/0003-governanca-chaves.md) para o texto final.
 
 **Contexto.** R5 exige ≥1 chave com orçamento (budget) e ≥1 com limite de requisições, com recusa **antes** de chegar ao provider.
 
 **Opções consideradas.**
 1. Uma única virtual key para toda a app, com budget e rate limit combinados.
-2. Virtual keys separadas por capacidade/feature, cada uma com seu próprio budget e/ou rate limit, para isolar o "orçamento estourado" de uma feature do resto.
+2. Chave de produção (`app`) sem limites apertados + chaves de demonstração dedicadas para o roteiro de governança, isolando o risco de uma demo derrubar a operação normal.
 
-**Decisão.** Opção 2, ao menos para demonstrar o critério de aceite: uma virtual key com budget mensal (ligada a [ADR-000](#adr-000-pol%C3%ADtica-corporativa-de-providers-e-or%C3%A7amento-de-ia)) e outra com limite de requisições (ex.: capacidade de alto volume como `helpdesk-topics`, que processa 5.000 tickets em lotes).
+**Decisão.** Opção 2. `app` usa `GATEWAY_API_KEY` sem budget/rate limit apertado. Duas virtual keys de demonstração (`demo-budget`, `demo-ratelimit`), restritas a `helpdesk-classify`, são criadas por script (`gateway/setup_governance_demo_keys.sh`, chamando `POST /key/generate` — sem passo manual em painel). Preço real por token declarado em `gateway/config.yaml` (sem isso o LiteLLM calcula custo zero e o orçamento nunca estoura).
 
-**Consequências.** `app/` usa só a(s) chave(s) do gateway — nunca `FAKE_OPENAI_KEY`/`FAKE_ANTHROPIC_KEY`. O roteiro de governança do README precisa produzir, de forma repetível, 1 recusa por orçamento e 1 por rate limit, sem incrementar `/admin/calls` (prova de que a recusa acontece antes do provider).
+**Consequências.** `app/` usa só a chave do gateway — nunca `FAKE_OPENAI_KEY`/`FAKE_ANTHROPIC_KEY` (confirmado: `docker compose exec app env` só mostra `GATEWAY_BASE_URL`/`GATEWAY_API_KEY`). O roteiro de governança do README produz, de forma repetível, 1 recusa por orçamento (`429 budget_exceeded`) e 1 por rate limit (`429 throttling_error`), sem incrementar `/admin/calls` — testado nesta sessão.
 
 **Evidência a coletar:** execução do roteiro descrito em [runbook.md](./runbook.md#roteiro-de-governança).
 
