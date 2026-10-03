@@ -36,7 +36,7 @@ curl -s -o /dev/null -w "1o byte: %{time_starttransfer}s | fim: %{time_total}s\n
 
 **Observado:** `1o byte: 15.872702s | fim: 15.872935s` — o primeiro byte chega praticamente no mesmo instante que o último. O atendente olha para uma tela parada por quase 16 segundos antes do texto aparecer inteiro de uma vez.
 
-**Causa no código:** [app/helpdesk/suggestion.py:6](app/helpdesk/suggestion.py) chama `llm.call_anthropic` de forma síncrona e retorna o texto completo; [app/helpdesk/llm.py:20](app/helpdesk/llm.py) usa `anthropic_client.messages.create(...)` sem `stream=True`, então a resposta só existe por completo no final.
+**Causa no código:** `app/helpdesk/suggestion.py:6` (v1) chamava `llm.call_anthropic` de forma síncrona e retornava o texto completo; `app/helpdesk/llm.py:20` (v1) usava `anthropic_client.messages.create(...)` sem `stream=True`, então a resposta só existia por completo no final. Ambos os arquivos mudaram desde então — `llm.py` foi removido na Fase 4 (ver métrica abaixo), e `suggestion.py` ganhou streaming de verdade na Fase 6 (ver Fluxos).
 
 ### Dor 3 — um provider instável derruba parte do helpdesk
 
@@ -49,7 +49,7 @@ curl -s -X POST localhost:8090/admin/failures -H "Content-Type: application/json
 
 **Observado:** com `anthropic` em `error_500`, F1 (classificação) e F4 (extração) continuaram respondendo `200` normalmente; F2 (sugestão) e F3 (relatório) passaram a responder `500 Internal Server Error` em ~1,2–1,5s. Metade do helpdesk parou porque metade das features depende exclusivamente do provider que caiu.
 
-**Causa no código:** [app/helpdesk/config.py:9-13](app/helpdesk/config.py) fixa `anthropic` para F2/F3 e `openai` para F1/F4, cada feature falando com um único provider via [app/helpdesk/llm.py](app/helpdesk/llm.py), sem nenhum destino alternativo.
+**Causa no código (v1):** `app/helpdesk/config.py:9-13` fixava `anthropic` para F2/F3 e `openai` para F1/F4, cada feature falando com um único provider via `app/helpdesk/llm.py` (removido na Fase 4), sem nenhum destino alternativo. Resolvido na Fase 5 com fallback técnico no gateway (ver Tabela de capacidades).
 
 ### Dor 4 — trocar modelo exige mudar código e reconstruir
 
