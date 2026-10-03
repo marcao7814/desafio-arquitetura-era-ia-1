@@ -1,5 +1,16 @@
-"""F2 — POST /tickets/reply-suggestion"""
-from client import post
+"""F2 — POST /tickets/reply-suggestion (streaming, decidido no requisito 6 / ADR-004)
+
+O contrato mudou da v2-decoupled para a main: a suíte da v1-coupled/v2-decoupled
+fixava um corpo JSON único; aqui fixamos o formato de evento (SSE) e o texto
+reconstruído a partir dos chunks, que continua sendo o mesmo texto
+determinístico do provider simulado.
+"""
+import json
+import time
+
+import httpx
+
+from client import APP_URL
 
 _INTRO = (
     "Olá! Sinto muito pelo transtorno com a entrega do seu pedido.\n\n"
@@ -44,21 +55,57 @@ EXPECTED_SUGGESTION = "\n\n".join([
 ])
 
 
-def test_suggest_delivery_delay_returns_full_text():
-    response = post("/tickets/reply-suggestion", {
-        "ticket_id": "TK-00043",
-        "text": "Meu pedido #481516 não chegou e já passou do prazo, urgente",
-    })
+def _collect_stream(ticket_id: str, text: str):
+    """Faz o POST streaming e devolve (status, content_type, eventos, tempo_primeiro_chunk, tempo_total)."""
+    start = time.monotonic()
+    first_chunk_time = None
+    events = []  # (event_name, data_dict)
+    current_event = "message"
 
-    assert response.status_code == 200
-    assert response.json() == {
-        "ticket_id": "TK-00043",
-        "suggestion": EXPECTED_SUGGESTION,
-    }
+    with httpx.stream("POST", f"{APP_URL}/tickets/reply-suggestion",
+                       json={"ticket_id": ticket_id, "text": text}, timeout=60) as response:
+        status_code = response.status_code
+        content_type = response.headers.get("content-type", "")
+        for line in response.iter_lines():
+            if not line:
+                continue
+            if line.startswith("event:"):
+                current_event = line[len("event:"):].strip()
+                continue
+            if line.startswith("data:"):
+                if first_chunk_time is None:
+                    first_chunk_time = time.monotonic() - start
+                payload = json.loads(line[len("data:"):].strip())
+                events.append((current_event, payload))
+                current_event = "message"
+
+    total_time = time.monotonic() - start
+    return status_code, content_type, events, first_chunk_time, total_time
+
+
+def test_suggest_delivery_delay_streams_full_text():
+    status_code, content_type, events, first_chunk_time, total_time = _collect_stream(
+        "TK-00043", "Meu pedido #481516 não chegou e já passou do prazo, urgente")
+
+    assert status_code == 200
+    assert content_type.startswith("text/event-stream")
+
+    # Reconstrói o texto a partir dos chunks "message" (sem event: explícito).
+    chunks = [payload["chunk"] for event, payload in events if event == "message"]
+    assert "".join(chunks) == EXPECTED_SUGGESTION
+
+    # Último evento é "end" com o ticket_id, conforme documentacao/contract.md.
+    assert events[-1] == ("end", {"ticket_id": "TK-00043"})
+
+    # Requisito 6: primeiro trecho chega antes da metade do tempo total da
+    # resposta. O limite absoluto de 1,5s do contrato depende da precisão de
+    # agendamento do host rodando o provider-fake (ver documentacao/plan.md);
+    # a relação "antes da metade" é a parte robusta e testável aqui.
+    assert first_chunk_time < total_time / 2
 
 
 def test_suggest_missing_text_returns_422():
-    response = post("/tickets/reply-suggestion", {"ticket_id": "TK-1"})
+    response = httpx.post(f"{APP_URL}/tickets/reply-suggestion", json={"ticket_id": "TK-1"}, timeout=60)
 
     assert response.status_code == 422
     detail = response.json()["detail"]

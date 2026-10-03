@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from typing import Protocol
 
 
@@ -9,4 +10,7 @@ class CompletionGateway(Protocol):
     """
 
     def complete(self, capability: str, task: str, content: str) -> str:
+        ...
+
+    def stream(self, capability: str, task: str, content: str) -> Iterator[str]:
         ...

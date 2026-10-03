@@ -6,7 +6,7 @@
 
 O helpdesk de uma loja online tem 4 features de IA (classificação de ticket, sugestão de resposta, relatório de temas e extração de dados de pedido) acopladas diretamente a dois providers (OpenAI e Anthropic), de forma síncrona e sem resiliência. O objetivo deste trabalho é levar essa aplicação a um estado em que trocar de modelo ou de provider seja mudança de configuração — não um projeto — passando por: diagnóstico medido da v1, testes de caracterização, medição de acoplamento, refatoração assistida por agente atrás de um AI Gateway, e decisão explícita do modo de execução de cada feature.
 
-**Status atual:** pós-`v2-decoupled`, Fase 5 concluída — a aplicação fala com os providers exclusivamente por um AI Gateway (LiteLLM, serviços `gateway`+`db` no compose), usando capacidades lógicas (`helpdesk-classify`, `helpdesk-suggest`, `helpdesk-topics`, `helpdesk-extract`). Nenhuma chave de provider chega ao serviço `app`. O gateway já tem timeout explícito, retry limitado (2 tentativas por destino) e fallback técnico entre providers para as 4 capacidades; fallback com modelo fraco decidido por feature com evidência real (ligado para F1/F2/F3, desligado para F4 — ver Tabela de fallback); e governança mínima (orçamento + limite de requisições, com recusa antes do provider). Com isso, a Dor 3 do diagnóstico abaixo (provider instável derruba parte do helpdesk) **já não reproduz mais**: um provider em `error_500` agora cai no fallback técnico ou no modelo fraco, conforme a feature. Falta a Fase 6: decidir e implementar o modo de execução (síncrono/streaming/assíncrono) de cada feature — até lá, todas continuam síncronas como na v1.
+**Status atual:** `main` — todas as 7 fases do [plano de execução](documentacao/plan.md) concluídas. A aplicação fala com os providers exclusivamente por um AI Gateway (LiteLLM, serviços `gateway`+`db` no compose), usando capacidades lógicas (`helpdesk-classify`, `helpdesk-suggest`, `helpdesk-topics`, `helpdesk-extract`) com timeout explícito, retry limitado, fallback técnico entre providers e fallback com modelo fraco decidido por feature (ligado para F1/F2/F3, desligado para F4 — ver Tabela de fallback), mais governança mínima (orçamento + limite de requisições). Nenhuma chave de provider chega ao serviço `app`. Cada feature tem o modo de execução decidido no contrato (requisito 6): **F1 e F4 síncronos** (timeout de 15s, erro explícito se estourar), **F2 em streaming** (SSE) e **F3 assíncrono** (`202` → polling → `303`). Com isso, as 4 dores do diagnóstico da v1 abaixo estão resolvidas: o relatório não trava mais o cliente (assíncrono), a sugestão mostra texto incremental (streaming), um provider instável não derruba mais o helpdesk (fallback técnico/fraco) e a troca de modelo é só configuração do gateway (ver Troca de modelo).
 
 ## Diagnóstico da v1
 
@@ -113,6 +113,21 @@ Gera `metrics/results/<nome-da-tag>.csv` e o `.png` correspondente (gráfico A×
 
 `llm.py`, `config.py` e `schemas.py` caem na zona de dor (`A<0,5 ∧ I<0,5 ∧ D≥0,5`): são componentes muito dependidos (`Ca` alto) e totalmente concretos (`A=0`). `llm.py` é hoje o componente que fala direto com os SDKs dos providers — exatamente o papel que, segundo [documentacao/adr.md (ADR-003)](documentacao/adr.md#adr-003-capacidades-lógicas-e-mapeamento-para-modelos-físicos), **não pode** ser declarado exceção: é alvo prioritário da refatoração da Fase 4 (provavelmente introduzindo uma abstração/porta que as features dependam, invertendo a dependência). `schemas.py` é o candidato mais claro a "estável por natureza" (são só tipos de valor — modelos Pydantic de entrada/saída), mas a decisão de declará-lo exceção fica para o ADR da métrica ([ADR-006](documentacao/adr.md#adr-006-leitura-da-métrica-de-acoplamento-e-exceções-declaradas)), à luz da medição da `main`, não da `v1`.
 
+**Leitura do gráfico da `main` (final):**
+
+| Componente | Ca | Ce | I | A | D | Zona de dor? |
+|---|---|---|---|---|---|---|
+| `main` | 0 | 6 | 1,00 | 0,00 | 0,00 | não |
+| `report` | 1 | 4 | 0,80 | 0,00 | 0,20 | não |
+| `classification` / `extraction` / `suggestion` | 1 | 3 | 0,75 | 0,00 | 0,25 | não |
+| `tickets` | 1 | 1 | 0,50 | 0,00 | 0,50 | não |
+| `adapters.gateway` | 1 | 1 | 0,50 | 0,00 | 0,50 | não |
+| `ports` | 4 | 0 | 0,00 | 1,00 | 0,00 | não |
+| `config` | 6 | 0 | 0,00 | 0,00 | 1,00 | **sim — exceção declarada** |
+| `schemas` | 5 | 0 | 0,00 | 0,00 | 1,00 | **sim — exceção declarada** |
+
+Entre a `v2-decoupled` e a `main`, `adapters.gateway` saiu da zona de dor: passou a depender de `config` para sua própria configuração (URL/chave do gateway), em vez de recebê-la via parâmetros do composition root — `Ce` subiu de 0 para 1 (`I` foi de 0,00 para 0,50, que não é `<0,50`). Essa mudança segue o mesmo padrão já usado por `classification`/`suggestion`/`extraction`/`report` (cada um lê sua própria config), não foi desenhada só para mexer no número. `config.py` e `schemas.py` continuam na zona de dor mecanicamente e são declarados exceção — nenhum dos dois é feature nem o componente que chama o gateway, e nenhum tem comportamento (só tipos de valor e constantes). Nenhum componente de feature está na zona de dor. Detalhe e evidência completa em [docs/adr/0005-metrica-excecoes.md](docs/adr/0005-metrica-excecoes.md).
+
 ## Tabela de capacidades
 
 Configuração completa em [gateway/config.yaml](gateway/config.yaml). Número máximo de tentativas por destino (primário, fallback técnico e modelo fraco, quando existe): **2** (1 chamada + 1 retry — `litellm_settings.num_retries: 1`).
@@ -141,7 +156,64 @@ Testado nesta sessão: com os dois `large` de uma capacidade em `error_500`, `he
 
 ## Fluxos
 
-_A preencher na Fase 6 (modo de execução por feature) — ver [documentacao/adr.md](documentacao/adr.md#adr-004-modo-de-execução-por-feature)._
+Decisão completa, com a árvore de perguntas por feature, em [docs/adr/0004-modo-de-execucao.md](docs/adr/0004-modo-de-execucao.md).
+
+### F1 — Classificação (síncrono)
+
+```bash
+curl -s -X POST localhost:8000/tickets/classification -H "Content-Type: application/json" \
+  -d '{"ticket_id": "TK-00042", "text": "Meu pedido #481516 não chegou, urgente"}'
+# 200 {"ticket_id": "TK-00042", "category": "delivery", "priority": "high"}
+```
+
+Timeout de 15s no nível da aplicação: se estourar, responde `503` explícito em vez de ficar pendurada.
+
+### F2 — Sugestão de resposta (streaming/SSE)
+
+```bash
+curl -N -X POST localhost:8000/tickets/reply-suggestion -H "Content-Type: application/json" \
+  -d '{"ticket_id": "TK-00042", "text": "Meu pedido #481516 não chegou, urgente"}'
+# 200, Content-Type: text/event-stream
+# data: {"chunk": "Olá! ..."}
+# data: {"chunk": "..."}
+# ...
+# event: end
+# data: {"ticket_id": "TK-00042"}
+```
+
+Se o provider falhar no meio da geração (`midstream_error`), o cliente recebe `event: error` / `data: {"ticket_id": "...", "message": "A geração foi interrompida"}`, no formato de [documentacao/contract.md](documentacao/contract.md#f2--sugerir-resposta).
+
+**Nota de ambiente:** o primeiro trecho chega sempre antes da metade do tempo total da resposta (confirmado), mas o tempo *absoluto* até o primeiro chunk mediu 3-5s nesta sessão de desenvolvimento, não os 1,5s do contrato — porque o próprio `provider-fake`, chamado direto (sem app, sem gateway), já demora ~2,1-2,5s até o primeiro token neste ambiente (Docker Desktop/Windows), acima do TTFT de 0,8s documentado. Não é um buffer escondido na aplicação — confirmado medindo chunk a chunk com timestamp. Detalhe em [docs/adr/0004-modo-de-execucao.md](docs/adr/0004-modo-de-execucao.md).
+
+### F3 — Relatório de temas (assíncrono)
+
+```bash
+curl -s -i -X POST localhost:8000/reports/topics -H "Content-Type: application/json" \
+  -d '{"start": "2026-08-01", "end": "2026-08-31"}'
+# 202 Accepted
+# Location: /reports/topics/status/<job_id>
+# Retry-After: 5
+
+curl -s localhost:8000/reports/topics/status/<job_id>
+# 200 {"state": "running", "progress": "300/5000"}
+# ... quando terminar:
+# 303 See Other, Location: /reports/topics/<job_id>
+
+curl -s localhost:8000/reports/topics/<job_id>
+# 200 {"start": "...", "end": "...", "total_tickets": 5000, "topics": [...]}
+```
+
+Se o relatório não conseguir terminar (ex.: os dois providers fora do ar), o status chega a `{"state": "failed", "reason": "..."}` em até 60s — testado: 10s.
+
+### F4 — Extração de dados (síncrono)
+
+```bash
+curl -s -X POST localhost:8000/tickets/extraction -H "Content-Type: application/json" \
+  -d '{"ticket_id": "TK-00042", "text": "Quero trocar o pedido #605065, veio quebrado"}'
+# 200 {"ticket_id": "TK-00042", "order_number": "#605065", "product": null}
+```
+
+Mesmo timeout de 15s de F1. Diferente de F1, sem fallback para modelo fraco (ver Tabela de fallback).
 
 ## Troca de modelo
 
@@ -183,4 +255,15 @@ Em ambos os casos, confirmado nesta sessão: `GET localhost:8090/admin/calls` n�
 
 ## Mapa de decisões
 
-_A preencher na Fase 7 — rascunho das decisões já em [documentacao/adr.md](documentacao/adr.md); os ADRs definitivos vão para `docs/adr/`._
+Rascunho e histórico de cada decisão (contexto, opções descartadas) em [documentacao/adr.md](documentacao/adr.md). ADRs definitivos, com evidência testada nesta sessão:
+
+| ADR | Nível | Resumo |
+|---|---|---|
+| [0001](docs/adr/0001-banco-de-dados-do-gateway.md) | software | Postgres para persistir chaves virtuais do gateway |
+| [0002](docs/adr/0002-resiliencia-e-fallback.md) | solução | Timeout por capacidade, retry limitado (2/destino), fallback técnico entre providers e fallback com modelo fraco decidido por feature com evidência real |
+| [0003](docs/adr/0003-governanca-chaves.md) | software | Chaves de demonstração para orçamento e limite de requisições, criadas por script |
+| [0004](docs/adr/0004-modo-de-execucao.md) | software | Modo de execução por feature: F1/F4 síncrono, F2 streaming, F3 assíncrono |
+| [0005](docs/adr/0005-metrica-excecoes.md) | software | `adapters.gateway` corrigido estruturalmente; `config`/`schemas` declarados exceção |
+| [0006](docs/adr/0006-posicao-e-escolha-do-gateway.md) | solução | LiteLLM Proxy como fronteira entre `app/` e os providers |
+| [0007](docs/adr/0007-capacidades-logicas.md) | software | Uma capacidade lógica por tarefa (`helpdesk-<tarefa>`) |
+| [0008](docs/adr/0008-politica-corporativa-providers-orcamento.md) | corporativa | Providers aceitos e teto de gasto aplicado como orçamento no gateway |

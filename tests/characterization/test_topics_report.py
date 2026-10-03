@@ -1,11 +1,17 @@
-"""F3 — POST /reports/topics
+"""F3 — POST /reports/topics (assíncrono, decidido no requisito 6 / ADR-004)
+
+O contrato mudou da v2-decoupled para a main: a suíte da v1-coupled/v2-decoupled
+fixava um 200 síncrono com o relatório completo; aqui fixamos o fluxo
+Asynchronous Request-Reply (202 -> polling -> 303 -> resultado), mas o
+resultado final continua sendo os mesmos 15 temas determinísticos.
 
 Usa um único dia (2026-08-01, 137 tickets) em vez do mês inteiro para manter a
-suíte rápida: um único lote de até 150 tickets já exercita a mesma chamada ao
-provider que o período inteiro, sem pagar pelos ~34 lotes sequenciais do mês
-(ver documentacao/runbook.md, Dor 1, sobre o tempo real do relatório mensal).
+suíte rápida — ver documentacao/runbook.md, Dor 1, sobre o tempo real do
+relatório mensal completo.
 """
-from client import post
+import time
+
+from client import get, post
 
 EXPECTED_TOPICS = [
     {"topic": "Problema no rastreio", "count": 20, "examples": ["TK-00001", "TK-00007", "TK-00008"]},
@@ -26,11 +32,33 @@ EXPECTED_TOPICS = [
 ]
 
 
-def test_topics_for_single_day():
-    response = post("/reports/topics", {"start": "2026-08-01", "end": "2026-08-01"})
+def _poll_until_done(status_path: str, timeout_seconds: float = 60) -> str:
+    """Faz polling do status até 303 (done) ou falha; devolve a Location do resultado."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        response = get(status_path)
+        if response.status_code == 303:
+            return response.headers["location"]
+        assert response.status_code == 200
+        body = response.json()
+        assert body["state"] in ("pending", "running"), body
+        time.sleep(1)
+    raise AssertionError(f"job não terminou em {timeout_seconds}s: último estado consultado acima")
 
-    assert response.status_code == 200
-    assert response.json() == {
+
+def test_topics_for_single_day():
+    accepted = post("/reports/topics", {"start": "2026-08-01", "end": "2026-08-01"})
+
+    assert accepted.status_code == 202
+    assert accepted.headers["location"].startswith("/reports/topics/status/")
+    assert "retry-after" in accepted.headers
+
+    result_path = _poll_until_done(accepted.headers["location"])
+    assert result_path.startswith("/reports/topics/")
+
+    result = get(result_path)
+    assert result.status_code == 200
+    assert result.json() == {
         "start": "2026-08-01",
         "end": "2026-08-01",
         "total_tickets": 137,

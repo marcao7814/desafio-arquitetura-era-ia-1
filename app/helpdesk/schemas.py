@@ -14,11 +14,6 @@ class Classification(BaseModel):
     priority: str
 
 
-class ReplySuggestion(BaseModel):
-    ticket_id: str
-    suggestion: str
-
-
 class OrderData(BaseModel):
     ticket_id: str
     order_number: str | None

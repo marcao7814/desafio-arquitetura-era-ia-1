@@ -21,7 +21,7 @@
 ## ADR-000: Política corporativa de providers e orçamento de IA
 
 **Nível:** corporativa
-**Status:** Proposta
+**Status:** Decidida — ver [docs/adr/0008-politica-corporativa-providers-orcamento.md](../docs/adr/0008-politica-corporativa-providers-orcamento.md) para o texto final.
 
 **Contexto.** A empresa hoje usa OpenAI e Anthropic lado a lado sem critério ("funcionou melhor no teste"), sem teto de gasto declarado e sem responsável único pela decisão de qual provider é aceitável para dados de clientes.
 
@@ -41,7 +41,7 @@
 ## ADR-001: Posição e escolha do AI Gateway
 
 **Nível:** solução
-**Status:** Proposta
+**Status:** Decidida — ver [docs/adr/0006-posicao-e-escolha-do-gateway.md](../docs/adr/0006-posicao-e-escolha-do-gateway.md) para o texto final.
 
 **Contexto.** Na v1, a app depende de detalhes concretos e voláteis de cada provider (SDK, formato de API, nome de modelo, credencial). R5 exige um gateway self-hosted como serviço `gateway` no compose, entregando capacidades lógicas, credenciais isoladas, troca de modelo por config, governança e resiliência.
 
@@ -99,7 +99,7 @@
 ## ADR-003: Capacidades lógicas e mapeamento para modelos físicos
 
 **Nível:** software
-**Status:** Proposta
+**Status:** Decidida — ver [docs/adr/0007-capacidades-logicas.md](../docs/adr/0007-capacidades-logicas.md) para o texto final.
 
 **Contexto.** R5 exige que nenhum nome de modelo físico (`gpt-fake-*`, `claude-fake-*`) apareça em `app/`. A app deve pedir uma capacidade lógica; o gateway resolve o modelo físico.
 
@@ -119,7 +119,7 @@
 ## ADR-004: Modo de execução por feature
 
 **Nível:** software
-**Status:** Proposta — decisão final depende da Fase 6 de [plan.md](./plan.md)
+**Status:** Decidida e implementada — ver [docs/adr/0004-modo-de-execucao.md](../docs/adr/0004-modo-de-execucao.md) para o texto final com evidência.
 
 **Contexto.** Uma chamada a LLM não se comporta como uma chamada HTTP comum. R6 exige decidir, por feature, entre síncrono, streaming e assíncrono, a partir de 3 perguntas: "alguém está esperando agora?", "cabe no orçamento de latência?", "é consumível aos poucos?".
 
@@ -177,12 +177,12 @@
 ## ADR-006: Leitura da métrica de acoplamento e exceções declaradas
 
 **Nível:** software
-**Status:** Proposta — a preencher após medições reais
+**Status:** Decidida, com evidência — ver [docs/adr/0005-metrica-excecoes.md](../docs/adr/0005-metrica-excecoes.md) para o texto final.
 
 **Contexto.** R3 define a régua fixa (Ca, Ce, I, A, D) sobre `app/helpdesk/`. Componentes concretos e estáveis por natureza podem cair na zona de dor sem serem um problema real; é permitido declará-los como exceção, com justificativa — exceto o componente que chama o gateway e os componentes de feature.
 
-**Decisão.** Qualquer exceção à zona de dor será listada aqui com: nome do componente, por que é estável por natureza (ex.: tipo de valor de domínio que não muda com a infraestrutura), e os valores de A/I/D observados. Esta seção começa vazia — será preenchida com base nos CSVs reais gerados na Fase 3 (v1), Fase 4 (v2) e Fase 6 (main) de [plan.md](./plan.md), nunca com números hipotéticos.
+**Decisão.** Na medição da `main`, `config.py` e `schemas.py` caem na zona de dor mecanicamente (`Ca` alto, `A=0`, `Ce=0`) e são declarados exceção: são módulos de tipos de valor e configuração, sem comportamento, que não mudam com a infraestrutura. `adapters.gateway` — que caiu na zona de dor até a Fase 5 — **não** virou exceção (a régua proíbe): foi corrigido estruturalmente, fazendo-o depender de `config` para sua própria configuração em vez de recebê-la via parâmetros do composition root (`Ce` passou de 0 para 1, tirando-o da zona de dor: `I=0,5`, que não é `<0,5`).
 
-**Consequências.** Se, na `main`, algum componente de feature ou o componente que chama o gateway estiver na zona de dor, a resposta é refatorar — não adicionar exceção aqui.
+**Consequências.** Nenhum componente de feature nem `adapters.gateway` está na zona de dor na `main` — confirmado em `metrics/results/main.csv`. As únicas exceções são os dois módulos de valor/configuração, exatamente o caso que specs.md antecipa como "não um problema real".
 
-**Evidência a coletar:** `metrics/results/{v1-coupled,v2-decoupled,main}.csv`.
+**Evidência:** `metrics/results/main.csv` — `adapters.gateway`: `Ca=1, Ce=1, I=0,50, A=0,00, D=0,50` (fora da zona de dor); `config`: `Ca=6, Ce=0, I=0,00, A=0,00, D=1,00` (zona de dor, exceção); `schemas`: `Ca=5, Ce=0, I=0,00, A=0,00, D=1,00` (zona de dor, exceção).

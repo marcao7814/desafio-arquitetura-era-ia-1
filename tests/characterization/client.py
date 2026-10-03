@@ -10,3 +10,7 @@ TIMEOUT = 60
 
 def post(path: str, json: dict) -> httpx.Response:
     return httpx.post(f"{APP_URL}{path}", json=json, timeout=TIMEOUT)
+
+
+def get(path: str, follow_redirects: bool = False) -> httpx.Response:
+    return httpx.get(f"{APP_URL}{path}", timeout=TIMEOUT, follow_redirects=follow_redirects)
