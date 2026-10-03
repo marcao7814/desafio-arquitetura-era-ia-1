@@ -5,6 +5,23 @@ services:
     ports:
       - "8090:8090"
 
+  gateway:
+    image: ghcr.io/berriai/litellm:v1.102.1
+    env_file: .env
+    volumes:
+      - ./gateway/config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness')"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+    depends_on:
+      provider-fake:
+        condition: service_healthy
+
   edge:
     image: nginx:1.27-alpine
     ports:
@@ -17,7 +34,11 @@ services:
 
   app:
     build: ./app
-    env_file: .env
+    # Variáveis explícitas (não env_file): o serviço app nunca recebe as
+    # chaves dos providers, só a credencial do próprio gateway.
+    environment:
+      GATEWAY_BASE_URL: ${GATEWAY_BASE_URL}
+      GATEWAY_API_KEY: ${GATEWAY_API_KEY}
     volumes:
       - ./data:/data:ro
     healthcheck:
@@ -26,5 +47,5 @@ services:
       timeout: 3s
       retries: 20
     depends_on:
-      provider-fake:
+      gateway:
         condition: service_healthy

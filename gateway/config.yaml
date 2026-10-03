@@ -1,0 +1,35 @@
+# Configuração do AI Gateway (LiteLLM Proxy).
+#
+# Capacidades lógicas (nome no padrão helpdesk-<tarefa>, ver documentacao/adr.md
+# ADR-003): a aplicação só conhece esses nomes, nunca os modelos físicos abaixo.
+#
+# v2-decoupled (mínimo exigido pelo requisito 4): mapeamento direto capacidade
+# -> modelo large. Fallback técnico, fallback com modelo fraco, orçamento e
+# limite de requisições entram na Fase 5 (requisito 5), depois desta tag.
+model_list:
+  - model_name: helpdesk-classify
+    litellm_params:
+      model: openai/gpt-fake-large
+      api_base: http://provider-fake:8090/openai/v1
+      api_key: os.environ/FAKE_OPENAI_KEY
+
+  - model_name: helpdesk-extract
+    litellm_params:
+      model: openai/gpt-fake-large
+      api_base: http://provider-fake:8090/openai/v1
+      api_key: os.environ/FAKE_OPENAI_KEY
+
+  - model_name: helpdesk-suggest
+    litellm_params:
+      model: anthropic/claude-fake-large
+      api_base: http://provider-fake:8090/anthropic
+      api_key: os.environ/FAKE_ANTHROPIC_KEY
+
+  - model_name: helpdesk-topics
+    litellm_params:
+      model: anthropic/claude-fake-large
+      api_base: http://provider-fake:8090/anthropic
+      api_key: os.environ/FAKE_ANTHROPIC_KEY
+
+general_settings:
+  master_key: os.environ/GATEWAY_MASTER_KEY

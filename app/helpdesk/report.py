@@ -1,10 +1,13 @@
+import json
+
 from fastapi import HTTPException
 
-from . import config, llm, tickets
+from . import config, tickets
+from .ports import CompletionGateway
 from .schemas import PeriodInput, Topic, TopicsReport
 
 
-def topics(period: PeriodInput) -> TopicsReport:
+def topics(period: PeriodInput, gateway: CompletionGateway) -> TopicsReport:
     if period.start > period.end:
         raise HTTPException(status_code=422, detail="A data inicial é posterior à data final")
 
@@ -15,7 +18,7 @@ def topics(period: PeriodInput) -> TopicsReport:
     for first in range(0, len(selected), config.TICKETS_PER_CALL):
         batch = selected[first:first + config.TICKETS_PER_CALL]
         content = "\n".join(f"[{t['id']}] {t['text']}" for t in batch)
-        answer = llm.parse_json(llm.call_anthropic(config.REPORT_MODEL, "topics", content))
+        answer = json.loads(gateway.complete(config.REPORT_CAPABILITY, "topics", content))
         for item in answer["topics"]:
             current = totals.setdefault(item["topic"], {"count": 0, "examples": []})
             current["count"] += item["count"]

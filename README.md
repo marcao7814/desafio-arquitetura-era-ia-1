@@ -6,7 +6,7 @@
 
 O helpdesk de uma loja online tem 4 features de IA (classificação de ticket, sugestão de resposta, relatório de temas e extração de dados de pedido) acopladas diretamente a dois providers (OpenAI e Anthropic), de forma síncrona e sem resiliência. O objetivo deste trabalho é levar essa aplicação a um estado em que trocar de modelo ou de provider seja mudança de configuração — não um projeto — passando por: diagnóstico medido da v1, testes de caracterização, medição de acoplamento, refatoração assistida por agente atrás de um AI Gateway, e decisão explícita do modo de execução de cada feature.
 
-**Status atual:** fase de diagnóstico e caracterização concluída (tag `v1-coupled`). Os mecanismos de resiliência (fallback entre providers, timeout, retry) ainda não existem nesta versão — é exatamente essa ausência que o diagnóstico abaixo evidencia. Esta seção será atualizada com o comportamento final (incluindo como o sistema se comporta quando um provider cai) ao final da Fase 6 do [plano de execução](documentacao/plan.md).
+**Status atual:** tag `v2-decoupled` — a aplicação já fala com os providers exclusivamente por um AI Gateway (LiteLLM, serviço `gateway` no compose), usando capacidades lógicas (`helpdesk-classify`, `helpdesk-suggest`, `helpdesk-topics`, `helpdesk-extract`) em vez de nomes de modelo físico. Nenhuma chave de provider chega ao serviço `app`. Governança (orçamento, limite de requisições), resiliência (timeout, retry, fallback técnico e com modelo fraco) e o modo de execução por feature ainda não existem — entram na Fase 5 e 6 do [plano de execução](documentacao/plan.md). Por isso, hoje, um provider instável ainda derruba as features que dependem dele (ver Dor 3 no diagnóstico abaixo); esta seção será atualizada com o comportamento final de resiliência ao fim da Fase 6.
 
 ## Diagnóstico da v1
 
@@ -65,6 +65,8 @@ curl -s -X POST localhost:8000/tickets/classification ... # agora responde com g
 
 **Causa no código:** [app/helpdesk/config.py:10-13](app/helpdesk/config.py) tem o nome do modelo físico hardcoded; nada na aplicação permite trocar isso sem alterar e reconstruir a imagem.
 
+> **Nota (tag `v2-decoupled`):** `app/helpdesk/config.py` não tem mais nenhum nome de modelo físico — só capacidades lógicas (`helpdesk-classify` etc.). O mapeamento capacidade → modelo físico mora em [gateway/config.yaml](gateway/config.yaml). A demonstração completa de troca por configuração (editar só `gateway/`, reiniciar só o serviço `gateway`, `app` não reiniciar) fica para a seção "Troca de modelo" na Fase 5.
+
 ## Como rodar
 
 ```bash
@@ -72,6 +74,8 @@ cp .env.example .env
 docker compose up -d --build --wait
 curl -s localhost:8000/health   # 200 {"status":"ok"}
 ```
+
+Sobe 4 serviços: `provider-fake`, `gateway` (AI Gateway, LiteLLM — ver [gateway/config.yaml](gateway/config.yaml)), `app` e `edge`. O `app` só recebe `GATEWAY_BASE_URL`/`GATEWAY_API_KEY`; as chaves do `provider-fake` ficam só no ambiente do `gateway` (ver `compose.yaml`).
 
 ### Testes de caracterização
 
@@ -86,11 +90,13 @@ pytest tests/characterization -v
 
 ```bash
 pip install -r metrics/requirements.txt
-python metrics/measure.py app/helpdesk --out metrics/results/v1-coupled.csv
+python metrics/measure.py app/helpdesk --out metrics/results/<nome-da-tag>.csv
 pytest metrics/test_measure.py -v   # testa a régua do próprio script com um pacote sintético
 ```
 
-Gera `metrics/results/v1-coupled.csv` e `metrics/results/v1-coupled.png` (gráfico A×I com a Main Sequence). Régua completa em [documentacao/specs.md](documentacao/specs.md#r3--métrica-de-acoplamento-régua-fixa).
+Gera `metrics/results/<nome-da-tag>.csv` e o `.png` correspondente (gráfico A×I com a Main Sequence). Régua completa em [documentacao/specs.md](documentacao/specs.md#r3--métrica-de-acoplamento-régua-fixa).
+
+**v1-coupled → v2-decoupled:** `llm.py` (zona de dor, `Ca=4`) foi extinto; em seu lugar, `ports.py` (um `Protocol`, `A=1,00`, fora da zona de dor) e `adapters/gateway.py` (único componente de `app/` que fala com o gateway, importado só por `main.py`). As 4 features mantêm exatamente a mesma leitura de `v1` (`I` e `D` inalterados) — a refatoração trocou *quem* elas importam (de um módulo concreto para uma abstração), não *quanto* elas importam. `adapters.gateway` continua na zona de dor nesta tag (`Ca=1`, já no mínimo possível, mas `Ce=0` ⇒ `I=0`): é um achado registrado em [docs/refactoring-plan.md](docs/refactoring-plan.md#revisão-do-plano) e não é resolvido artificialmente aqui — a expectativa é que a Fase 5 (retry/backoff/fallback) decomponha esse adapter em colaboradores internos reais, subindo `Ce` organicamente. O critério de aceite que proíbe exceção para este componente é escopado à tag `main`, não a esta.
 
 **Leitura do gráfico da v1-coupled:**
 
