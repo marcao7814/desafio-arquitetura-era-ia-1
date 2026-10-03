@@ -84,7 +84,28 @@ pytest tests/characterization -v
 
 ### Métrica de acoplamento
 
-_A preencher na Fase 3 do [plano de execução](documentacao/plan.md) — o script em `metrics/` ainda não existe nesta tag._
+```bash
+pip install -r metrics/requirements.txt
+python metrics/measure.py app/helpdesk --out metrics/results/v1-coupled.csv
+pytest metrics/test_measure.py -v   # testa a régua do próprio script com um pacote sintético
+```
+
+Gera `metrics/results/v1-coupled.csv` e `metrics/results/v1-coupled.png` (gráfico A×I com a Main Sequence). Régua completa em [documentacao/specs.md](documentacao/specs.md#r3--métrica-de-acoplamento-régua-fixa).
+
+**Leitura do gráfico da v1-coupled:**
+
+| Componente | Ca | Ce | I | A | D | Zona de dor? |
+|---|---|---|---|---|---|---|
+| `main` | 0 | 5 | 1,00 | 0,00 | 0,00 | não (I=1, correto para um composition root) |
+| `report` | 1 | 4 | 0,80 | 0,00 | 0,20 | não |
+| `extraction` / `suggestion` | 1 | 3 | 0,75 | 0,00 | 0,25 | não |
+| `classification` | 1 | 3 | 0,75 | 0,00 | 0,25 | não |
+| `tickets` | 1 | 1 | 0,50 | 0,00 | 0,50 | não (I=0,50 não é `<0,50`, fica no limite) |
+| `llm` | 4 | 1 | 0,20 | 0,00 | 0,80 | **sim** |
+| `config` | 6 | 0 | 0,00 | 0,00 | 1,00 | **sim** |
+| `schemas` | 5 | 0 | 0,00 | 0,00 | 1,00 | **sim** |
+
+`llm.py`, `config.py` e `schemas.py` caem na zona de dor (`A<0,5 ∧ I<0,5 ∧ D≥0,5`): são componentes muito dependidos (`Ca` alto) e totalmente concretos (`A=0`). `llm.py` é hoje o componente que fala direto com os SDKs dos providers — exatamente o papel que, segundo [documentacao/adr.md (ADR-003)](documentacao/adr.md#adr-003-capacidades-lógicas-e-mapeamento-para-modelos-físicos), **não pode** ser declarado exceção: é alvo prioritário da refatoração da Fase 4 (provavelmente introduzindo uma abstração/porta que as features dependam, invertendo a dependência). `schemas.py` é o candidato mais claro a "estável por natureza" (são só tipos de valor — modelos Pydantic de entrada/saída), mas a decisão de declará-lo exceção fica para o ADR da métrica ([ADR-006](documentacao/adr.md#adr-006-leitura-da-métrica-de-acoplamento-e-exceções-declaradas)), à luz da medição da `main`, não da `v1`.
 
 ## Tabela de capacidades
 
