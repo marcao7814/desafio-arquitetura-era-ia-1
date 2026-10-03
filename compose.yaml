@@ -31,6 +31,11 @@ services:
       interval: 2s
       timeout: 3s
       retries: 40
+      # A primeira subida roda migração do Prisma contra um Postgres recém-criado,
+      # concorrendo com o build de outras imagens — pode passar de 80s (40x2s)
+      # na primeira vez. start_period evita falhas nesse período de contarem
+      # para o limite de retries (achado na verificação final em clone limpo).
+      start_period: 60s
     depends_on:
       provider-fake:
         condition: service_healthy
@@ -61,6 +66,7 @@ services:
       interval: 2s
       timeout: 3s
       retries: 20
+      start_period: 15s
     depends_on:
       gateway:
         condition: service_healthy
